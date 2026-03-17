@@ -39,6 +39,11 @@ def run():
             duration=1.0,
         )
 
+        print(f"head pose: {mini.get_current_head_pose()}")
+        print(f"join positions: {mini.get_current_joint_positions()}")
+        print(f"antenna positions: {mini.get_present_antenna_joint_positions()}")
+
+
         print("move back to reset position")
         reset_head(mini=mini)
         

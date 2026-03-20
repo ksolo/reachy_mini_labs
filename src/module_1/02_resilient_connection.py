@@ -2,49 +2,62 @@
 Create a resilient connection, one that if it fails will attempt
 to retry with exponential backoff
 """
-from typing import Literal, Optional
+import logging
+from typing import Literal, Optional, Callable
 
 from reachy_mini import ReachyMini
 
 
-class ResilientReachyMini():
-
-    def __init__(
-            self,
-            robot_name: str = 'reachy_mini',
-            host: str = 'reachy-mini.local',
-            port: int = 8000,
-            connection_mode: Literal['auto', 'localhost_only', 'network'] = 'auto',
-            spawn_daemon: bool = False,
-            use_sim: bool = False,
-            timeout: float = 5.0,
-            automatic_body_yaw: bool = True,
-            log_level: str = 'INFO',
-            media_backend: str = 'default',
-            localhost_only: Optional[bool] = None,
-    ):
-        self._reachy_mini = ReachyMini(
-            robot_name=robot_name,
-            host=host,
-            port=port,
-            connection_mode=connection_mode,
-            spawn_daemon=spawn_daemon,
-            use_sim=use_sim,
-            timeout=timeout,
-            automatic_body_yaw=automatic_body_yaw,
-            log_level=log_level,
-            media_backend=media_backend,
-            localhost_only=localhost_only
-        )
+logger = logging.getLogger("resilient-session")
 
 
-    def __del__(self):
-        if hasattr(self._reachy_mini, "client"):
-            self._reachy_mini.client.disconnect()
-    
-    def __enter__(self) -> "ResilientReachyMini":
+class ResilientSession:
+    def __init__(self, max_retries=10, backoff_base=1.0, backoff_max=30.0):
+        self._mini = None
+        self._max_retries = max_retries
+        self._backoff_base = backoff_base
+        self._backoff_max = backoff_max
+
+    def _connect_with_retry(self):
+        """Retry ReachyMini() with exponential backoff."""
+        for attempt in range(self._max_retries):
+            try:
+                self._mini = ReachyMini()
+                self._mini.__enter__()  # start the SDK session
+                print(f"Connected on attempt {attempt + 1}")
+                return
+            except TimeoutError:
+                delay = min(self._backoff_base * (2 ** attempt), self._backoff_max)
+                print(f"Attempt {attempt + 1} failed, retrying in {delay:.1f}s...")
+                time.sleep(delay)
+        raise TimeoutError(f"Could not connect after {self._max_retries} attempts")
+
+    def _cleanup_current(self):
+        """Exit the current ReachyMini context, if any."""
+        if self._mini:
+            try:
+                self._mini.__exit__(None, None, None)
+            except Exception:
+                pass  # best-effort cleanup
+            self._mini = None
+
+    def reconnect(self):
+        """Tear down current connection, establish a new one."""
+        print("Reconnecting...")
+        self._cleanup_current()
+        self._connect_with_retry()
+
+    @property
+    def mini(self):
+        return self._mini
+
+    # The outer context manager owns the SESSION lifetime,
+    # not any single ReachyMini connection's lifetime.
+    # reconnect() may destroy and recreate ReachyMini
+    # instances multiple times within one 'with' block.
+    def __enter__(self):
+        self._connect_with_retry()
         return self
-    
-    def __exit__(self, exc_type, exc, tb):
-       self._reachy_mini.media_manager.close()
-       self._reachy_mini.client.disconnect() 
+
+    def __exit__(self, *args):
+        self._cleanup_current()
